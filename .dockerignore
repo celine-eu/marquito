@@ -5,3 +5,7 @@
 docker-compose.yaml
 Dockerfile
 taskfile.yaml
+
+.pytest_cache
+dist
+__pycache__
