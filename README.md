@@ -38,6 +38,56 @@ task run
 docker compose up --build
 ```
 
+## Helm
+
+```bash
+# Add Bitnami repo (only needed if postgresql.enabled=true)
+helm repo add bitnami https://charts.bitnami.com/bitnami
+helm repo update
+
+# Install with an external PostgreSQL
+helm install marquito helm/marquito \
+  --set db.host=my-postgres \
+  --set db.password=secret
+
+# Install with the bundled PostgreSQL subchart
+helm install marquito helm/marquito \
+  --set postgresql.enabled=true \
+  --set postgresql.auth.password=secret \
+  --set db.password=secret
+
+# Use an existing Secret for the DB password
+helm install marquito helm/marquito \
+  --set db.host=my-postgres \
+  --set existingSecret=my-db-secret
+
+# Expose via Ingress
+helm install marquito helm/marquito \
+  --set db.host=my-postgres \
+  --set db.password=secret \
+  --set ingress.enabled=true \
+  --set ingress.hosts[0].host=marquito.example.com \
+  --set ingress.hosts[0].paths[0].path=/ \
+  --set ingress.hosts[0].paths[0].pathType=Prefix
+```
+
+### Key values
+
+| Value | Default | Description |
+|-------|---------|-------------|
+| `image.tag` | Chart `appVersion` | Image tag to deploy |
+| `replicaCount` | `1` | Number of API pods |
+| `db.host` | `""` | External PostgreSQL host |
+| `db.port` | `5432` | PostgreSQL port |
+| `db.name` | `marquito` | Database name |
+| `db.user` | `marquito` | Database user |
+| `db.password` | `""` | Database password (use `existingSecret` in prod) |
+| `existingSecret` | `""` | Existing Secret name with `MARQUITO_DB_PASSWORD` key |
+| `migrate.enabled` | `true` | Run `alembic upgrade head` as a pre-install/upgrade Job |
+| `postgresql.enabled` | `false` | Deploy bundled Bitnami PostgreSQL |
+| `ingress.enabled` | `false` | Create Ingress resource |
+| `service.type` | `ClusterIP` | Kubernetes service type |
+
 ## API endpoints
 
 ### Admin

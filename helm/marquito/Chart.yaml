@@ -1,0 +1,16 @@
+apiVersion: v2
+name: marquito
+description: Python/FastAPI port of the Marquez data lineage API
+type: application
+version: 0.1.0
+appVersion: "latest"
+keywords:
+  - data-lineage
+  - openlineage
+  - marquez
+home: https://github.com/celine-eu/marquito
+dependencies:
+  - name: postgresql
+    version: "17.x.x"
+    repository: https://charts.bitnami.com/bitnami
+    condition: postgresql.enabled

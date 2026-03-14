@@ -1,0 +1,74 @@
+replicaCount: 1
+
+image:
+  repository: ghcr.io/celine-eu/marquito
+  # Defaults to Chart.appVersion when empty
+  tag: ""
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  name: ""
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  fsGroup: 1000
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: false
+
+service:
+  type: ClusterIP
+  port: 5000
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts:
+    - host: marquito.local
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+
+resources: {}
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+# Database connection settings
+db:
+  # Hostname of an external PostgreSQL instance.
+  # Leave empty when postgresql.enabled=true (auto-discovered).
+  host: ""
+  port: 5432
+  name: marquito
+  user: marquito
+  # Plain-text password — only used when existingSecret is empty.
+  password: ""
+
+# Name of an existing Secret that contains a key MARQUITO_DB_PASSWORD.
+# When set, db.password is ignored.
+existingSecret: ""
+
+# Run `alembic upgrade head` as a pre-install/pre-upgrade Helm hook Job.
+migrate:
+  enabled: true
+
+# Bundled PostgreSQL via Bitnami subchart.
+# When enabled, db.host is automatically pointed at the subchart service.
+postgresql:
+  enabled: false
+  auth:
+    username: marquito
+    password: marquito
+    database: marquito
