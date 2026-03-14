@@ -15,3 +15,9 @@ tasks:
     desc: "Create a new Alembic revision (autogenerate). Usage: task db:revision -- -m <message>"
     cmds:
       - "uv run alembic revision --autogenerate {{.CLI_ARGS}}"
+
+  release:
+    cmds:
+      - uv run semantic-release -v version --no-vcs-release
+      - git push
+      - git push --tags
