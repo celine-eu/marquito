@@ -15,6 +15,7 @@ dependencies = [
     "python-dateutil>=2.9.0.post0",
     "sqlalchemy>=2.0.48",
     "strawberry-graphql[fastapi]>=0.311.1",
+    "typer>=0.23.1",
     "uvicorn[standard]>=0.41.0",
 ]
 
@@ -28,6 +29,9 @@ dev = [
     "aiosqlite>=0.22.1",
 ]
 
+
+[project.scripts]
+marquito = "marquito.cli.main:app"
 
 [tool.uv]
 package = true
