@@ -32,6 +32,19 @@ task run
 # or: uv run uvicorn marquito.main:create_app --factory --host 0.0.0.0 --port 5000 --reload
 ```
 
+## CLI
+
+```bash
+# remove all history before duration string (eg 1d, 12h, 30m)
+marquito cleanup --retain=15d
+```
+
+### Options
+
+- --retain=15d — deletes history older than the window
+- --dry-run flag — prints counts without touching the DB
+- --db-url / MARQUITO_DATABASE_URL env var override for cron environments
+
 ## Docker
 
 ```bash

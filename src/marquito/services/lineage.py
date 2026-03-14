@@ -862,14 +862,135 @@ async def get_lineage_graph(
 # ---------------------------------------------------------------------------
 
 
+async def add_field_tag(
+    db: AsyncSession, namespace_name: str, dataset_name: str, field_name: str, tag_name: str
+) -> DatasetField | None:
+    ds = await get_dataset(db, namespace_name, dataset_name)
+    if ds is None:
+        return None
+    field_result = await db.execute(
+        select(DatasetField).where(
+            DatasetField.dataset_uuid == ds.uuid, DatasetField.name == field_name
+        )
+    )
+    field = field_result.scalar_one_or_none()
+    if field is None:
+        return None
+    tag_result = await db.execute(
+        select(DatasetFieldTag).where(
+            DatasetFieldTag.field_uuid == field.uuid, DatasetFieldTag.name == tag_name
+        )
+    )
+    field_uuid = field.uuid  # capture before expire
+    if tag_result.scalar_one_or_none() is None:
+        db.add(DatasetFieldTag(field_uuid=field_uuid, name=tag_name))
+        await db.flush()
+    db.expire(field)
+    field_result2 = await db.execute(
+        select(DatasetField)
+        .options(selectinload(DatasetField.tags))
+        .where(DatasetField.uuid == field_uuid)
+    )
+    return field_result2.scalar_one_or_none()
+
+
+async def remove_field_tag(
+    db: AsyncSession, namespace_name: str, dataset_name: str, field_name: str, tag_name: str
+) -> DatasetField | None:
+    from sqlalchemy import delete as sa_delete
+    ds = await get_dataset(db, namespace_name, dataset_name)
+    if ds is None:
+        return None
+    field_result = await db.execute(
+        select(DatasetField).where(
+            DatasetField.dataset_uuid == ds.uuid, DatasetField.name == field_name
+        )
+    )
+    field = field_result.scalar_one_or_none()
+    if field is None:
+        return None
+    field_uuid = field.uuid  # capture before expire
+    await db.execute(
+        sa_delete(DatasetFieldTag).where(
+            DatasetFieldTag.field_uuid == field_uuid, DatasetFieldTag.name == tag_name
+        )
+    )
+    await db.flush()
+    db.expire(field)
+    field_result2 = await db.execute(
+        select(DatasetField)
+        .options(selectinload(DatasetField.tags))
+        .where(DatasetField.uuid == field_uuid)
+    )
+    return field_result2.scalar_one_or_none()
+
+
+async def add_dataset_tag(
+    db: AsyncSession, namespace_name: str, dataset_name: str, tag_name: str
+) -> Dataset | None:
+    ds = await get_dataset(db, namespace_name, dataset_name)
+    if ds is None:
+        return None
+    tag_result = await db.execute(
+        select(DatasetTag).where(
+            DatasetTag.dataset_uuid == ds.uuid, DatasetTag.name == tag_name
+        )
+    )
+    if tag_result.scalar_one_or_none() is None:
+        db.add(DatasetTag(dataset_uuid=ds.uuid, name=tag_name))
+        await db.flush()
+    db.expire(ds)  # force reload of stale relationship collections
+    return await get_dataset(db, namespace_name, dataset_name)
+
+
+async def remove_dataset_tag(
+    db: AsyncSession, namespace_name: str, dataset_name: str, tag_name: str
+) -> Dataset | None:
+    from sqlalchemy import delete as sa_delete
+    ds = await get_dataset(db, namespace_name, dataset_name)
+    if ds is None:
+        return None
+    await db.execute(
+        sa_delete(DatasetTag).where(
+            DatasetTag.dataset_uuid == ds.uuid, DatasetTag.name == tag_name
+        )
+    )
+    await db.flush()
+    db.expire(ds)  # force reload of stale relationship collections
+    return await get_dataset(db, namespace_name, dataset_name)
+
+
+async def upsert_tag(db: AsyncSession, name: str, description: str | None) -> "Tag":
+    from marquito.models.orm import Tag
+
+    result = await db.execute(select(Tag).where(Tag.name == name))
+    tag = result.scalar_one_or_none()
+    if tag is None:
+        tag = Tag(name=name)
+        db.add(tag)
+    tag.description = description
+    await db.flush()
+    await db.refresh(tag)
+    return tag
+
+
+async def get_tag(db: AsyncSession, name: str) -> "Tag | None":
+    from marquito.models.orm import Tag
+
+    result = await db.execute(select(Tag).where(Tag.name == name))
+    return result.scalar_one_or_none()
+
+
 async def list_tags(
     db: AsyncSession, limit: int = 100, offset: int = 0
-) -> list[str]:
+) -> list:
     from sqlalchemy import union, literal_column
-    from marquito.models.orm import DatasetTag, DatasetFieldTag
+    from marquito.models.orm import DatasetTag, DatasetFieldTag, Tag
 
-    q = (
+    # All distinct tag names across the three sources, ordered
+    name_q = (
         union(
+            select(Tag.name),
             select(DatasetTag.name),
             select(DatasetFieldTag.name),
         )
@@ -877,5 +998,12 @@ async def list_tags(
         .limit(limit)
         .offset(offset)
     )
-    result = await db.execute(q)
-    return [row[0] for row in result.all()]
+    name_result = await db.execute(name_q)
+    names = [row[0] for row in name_result.all()]
+
+    # Fetch full Tag rows for names that have one (description, timestamps)
+    tag_result = await db.execute(select(Tag).where(Tag.name.in_(names)))
+    tag_map = {t.name: t for t in tag_result.scalars().all()}
+
+    # Return Tag ORM objects where available, plain name strings otherwise
+    return [tag_map.get(n) or n for n in names]

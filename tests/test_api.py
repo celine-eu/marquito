@@ -456,6 +456,72 @@ async def test_delete_dataset_not_found(client):
 
 
 @pytest.mark.asyncio
+async def test_add_and_remove_dataset_tag(client):
+    """POST /datasets/{ds}/tags/{tag} adds; DELETE removes. Response is the dataset."""
+    await create_namespace(client, "dtag-ns")
+    await create_dataset(client, "dtag-ns", "tagme")
+
+    add = await client.post(f"{BASE}/namespaces/dtag-ns/datasets/tagme/tags/GOLD")
+    assert add.status_code == 200
+    assert "GOLD" in add.json()["tags"]
+
+    # Idempotent — adding again should not duplicate
+    add2 = await client.post(f"{BASE}/namespaces/dtag-ns/datasets/tagme/tags/GOLD")
+    assert add2.status_code == 200
+    assert add2.json()["tags"].count("GOLD") == 1
+
+    remove = await client.delete(f"{BASE}/namespaces/dtag-ns/datasets/tagme/tags/GOLD")
+    assert remove.status_code == 200
+    assert "GOLD" not in remove.json()["tags"]
+
+
+@pytest.mark.asyncio
+async def test_add_dataset_tag_not_found(client):
+    await create_namespace(client, "dtag-miss-ns")
+    resp = await client.post(f"{BASE}/namespaces/dtag-miss-ns/datasets/ghost/tags/X")
+    assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_add_and_remove_field_tag(client):
+    """POST /datasets/{ds}/fields/{field}/tags/{tag} adds; DELETE removes. Returns dataset."""
+    await create_namespace(client, "ftag-ns")
+    await create_dataset(client, "ftag-ns", "ftable", fields=[
+        {"name": "device_id", "type": "STRING"},
+    ])
+
+    add = await client.post(
+        f"{BASE}/namespaces/ftag-ns/datasets/ftable/fields/device_id/tags/PII"
+    )
+    assert add.status_code == 200
+    fields = {f["name"]: f for f in add.json()["fields"]}
+    assert "PII" in fields["device_id"]["tags"]
+
+    # Idempotent
+    add2 = await client.post(
+        f"{BASE}/namespaces/ftag-ns/datasets/ftable/fields/device_id/tags/PII"
+    )
+    assert add2.json()["fields"][0]["tags"].count("PII") == 1
+
+    remove = await client.delete(
+        f"{BASE}/namespaces/ftag-ns/datasets/ftable/fields/device_id/tags/PII"
+    )
+    assert remove.status_code == 200
+    fields_after = {f["name"]: f for f in remove.json()["fields"]}
+    assert "PII" not in fields_after["device_id"]["tags"]
+
+
+@pytest.mark.asyncio
+async def test_add_field_tag_unknown_field(client):
+    await create_namespace(client, "ftag-miss-ns")
+    await create_dataset(client, "ftag-miss-ns", "ftable2")
+    resp = await client.post(
+        f"{BASE}/namespaces/ftag-miss-ns/datasets/ftable2/fields/ghost/tags/X"
+    )
+    assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
 async def test_dataset_versions(client):
     """Creating a dataset via PUT should record a version."""
     await create_namespace(client, "ver-ns")
@@ -1128,7 +1194,7 @@ async def test_dataset_version_created_by_run_populated(client):
     assert len(versions) >= 1
     run_linked = [v for v in versions if v.get("createdByRun") is not None]
     assert len(run_linked) >= 1
-    assert run_linked[0]["createdByRun"]["uuid"] == run_id
+    assert run_linked[0]["createdByRun"]["id"] == run_id
 
 
 @pytest.mark.asyncio
@@ -1184,7 +1250,7 @@ async def test_get_dataset_version_by_uuid(client):
     assert resp.status_code == 200
     data = resp.json()
     assert data["version"] == version_uuid
-    assert data["createdByRun"]["uuid"] == run_id
+    assert data["createdByRun"]["id"] == run_id
 
     # Unknown version UUID returns 404
     resp404 = await client.get(

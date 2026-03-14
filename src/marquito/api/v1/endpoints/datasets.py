@@ -83,6 +83,70 @@ async def delete_dataset(namespace: str, dataset: str, db: AsyncSession = Depend
     return await _enrich_dataset(ds, namespace, db)
 
 
+@router.post(
+    "/namespaces/{namespace}/datasets/{dataset}/fields/{field}/tags/{tag}",
+    response_model=DatasetResponse,
+    tags=["Datasets"],
+)
+async def add_field_tag(
+    namespace: str, dataset: str, field: str, tag: str, db: AsyncSession = Depends(get_db)
+):
+    result = await svc.add_field_tag(db, namespace, dataset, field, tag)
+    if result is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Dataset '{namespace}/{dataset}' or field '{field}' not found",
+        )
+    ds = await svc.get_dataset(db, namespace, dataset)
+    return await _enrich_dataset(ds, namespace, db)
+
+
+@router.delete(
+    "/namespaces/{namespace}/datasets/{dataset}/fields/{field}/tags/{tag}",
+    response_model=DatasetResponse,
+    tags=["Datasets"],
+)
+async def remove_field_tag(
+    namespace: str, dataset: str, field: str, tag: str, db: AsyncSession = Depends(get_db)
+):
+    result = await svc.remove_field_tag(db, namespace, dataset, field, tag)
+    if result is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Dataset '{namespace}/{dataset}' or field '{field}' not found",
+        )
+    ds = await svc.get_dataset(db, namespace, dataset)
+    return await _enrich_dataset(ds, namespace, db)
+
+
+@router.post(
+    "/namespaces/{namespace}/datasets/{dataset}/tags/{tag}",
+    response_model=DatasetResponse,
+    tags=["Datasets"],
+)
+async def add_dataset_tag(
+    namespace: str, dataset: str, tag: str, db: AsyncSession = Depends(get_db)
+):
+    ds = await svc.add_dataset_tag(db, namespace, dataset, tag)
+    if ds is None:
+        raise HTTPException(status_code=404, detail=f"Dataset '{namespace}/{dataset}' not found")
+    return await _enrich_dataset(ds, namespace, db)
+
+
+@router.delete(
+    "/namespaces/{namespace}/datasets/{dataset}/tags/{tag}",
+    response_model=DatasetResponse,
+    tags=["Datasets"],
+)
+async def remove_dataset_tag(
+    namespace: str, dataset: str, tag: str, db: AsyncSession = Depends(get_db)
+):
+    ds = await svc.remove_dataset_tag(db, namespace, dataset, tag)
+    if ds is None:
+        raise HTTPException(status_code=404, detail=f"Dataset '{namespace}/{dataset}' not found")
+    return await _enrich_dataset(ds, namespace, db)
+
+
 def _build_version_response(ds, v, namespace: str) -> DatasetVersionResponse:
     return DatasetVersionResponse(
         id=f"{namespace}:{ds.name}",
@@ -95,7 +159,7 @@ def _build_version_response(ds, v, namespace: str) -> DatasetVersionResponse:
         description=ds.description,
         lifecycleState=v.lifecycle_state,
         facets=v.facets or {},
-        createdByRun={"uuid": str(v.run_uuid)} if v.run_uuid else None,
+        createdByRun={"id": str(v.run_uuid)} if v.run_uuid else None,
     )
 
 
