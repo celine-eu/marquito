@@ -83,6 +83,22 @@ async def delete_dataset(namespace: str, dataset: str, db: AsyncSession = Depend
     return await _enrich_dataset(ds, namespace, db)
 
 
+def _build_version_response(ds, v, namespace: str) -> DatasetVersionResponse:
+    return DatasetVersionResponse(
+        id=f"{namespace}:{ds.name}",
+        type=ds.type,
+        name=ds.name,
+        physicalName=ds.physical_name,
+        createdAt=v.created_at,
+        version=v.version,
+        namespace=namespace,
+        description=ds.description,
+        lifecycleState=v.lifecycle_state,
+        facets=v.facets or {},
+        createdByRun={"uuid": str(v.run_uuid)} if v.run_uuid else None,
+    )
+
+
 @router.get(
     "/namespaces/{namespace}/datasets/{dataset}/versions",
     response_model=DatasetVersionList,
@@ -102,21 +118,33 @@ async def list_dataset_versions(
         await svc.list_dataset_versions(db, namespace, dataset, limit=limit, offset=offset),
         await svc.count_dataset_versions(db, namespace, dataset),
     )
-    items = [
-        DatasetVersionResponse(
-            id=f"{namespace}:{dataset}",
-            type=ds.type,
-            name=ds.name,
-            physicalName=ds.physical_name,
-            createdAt=v.created_at,
-            version=v.version,
-            namespace=namespace,
-            description=ds.description,
-            lifecycleState=v.lifecycle_state,
-        )
-        for v in versions
-    ]
+    items = [_build_version_response(ds, v, namespace) for v in versions]
     return DatasetVersionList(versions=items, totalCount=total)
+
+
+@router.get(
+    "/namespaces/{namespace}/datasets/{dataset}/versions/{version}",
+    response_model=DatasetVersionResponse,
+    tags=["Datasets"],
+)
+async def get_dataset_version(
+    namespace: str,
+    dataset: str,
+    version: str,
+    db: AsyncSession = Depends(get_db),
+):
+    import uuid as uuidlib
+    try:
+        vid = uuidlib.UUID(version)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid version UUID")
+    ds = await svc.get_dataset(db, namespace, dataset)
+    if ds is None:
+        raise HTTPException(status_code=404, detail=f"Dataset '{namespace}/{dataset}' not found")
+    v = await svc.get_dataset_version(db, namespace, dataset, vid)
+    if v is None:
+        raise HTTPException(status_code=404, detail=f"Version '{version}' not found")
+    return _build_version_response(ds, v, namespace)
 
 
 @router.get(
@@ -152,6 +180,10 @@ async def _enrich_job(job, namespace_name: str, db) -> JobResponse:
         sorted_runs = sorted(job.runs, key=lambda r: r.created_at, reverse=True)
         resp.latest_run = RunResponse.model_validate(sorted_runs[0])
         resp.latest_runs = [RunResponse.model_validate(r) for r in sorted_runs[:10]]
+    if job.versions:
+        latest_jv = job.versions[-1]  # already ordered by created_at ASC
+        resp.inputs = latest_jv.inputs or []
+        resp.outputs = latest_jv.outputs or []
     return resp
 
 
@@ -220,6 +252,29 @@ async def list_jobs(
 # ---------------------------------------------------------------------------
 
 
+def _enrich_run(run) -> RunResponse:
+    resp = RunResponse.model_validate(run)
+    resp.input_datasets = [
+        {
+            "namespace": m.dataset.namespace.name,
+            "name": m.dataset.name,
+            "datasetVersionUuid": str(m.dataset_version_uuid) if m.dataset_version_uuid else None,
+        }
+        for m in (run.input_datasets or [])
+        if m.dataset and m.dataset.namespace
+    ]
+    resp.output_datasets = [
+        {
+            "namespace": m.dataset.namespace.name,
+            "name": m.dataset.name,
+            "datasetVersionUuid": str(m.dataset_version_uuid) if m.dataset_version_uuid else None,
+        }
+        for m in (run.output_datasets or [])
+        if m.dataset and m.dataset.namespace
+    ]
+    return resp
+
+
 @router.post(
     "/namespaces/{namespace}/jobs/{job}/runs",
     response_model=RunResponse,
@@ -266,7 +321,7 @@ async def get_run(run_id: str, db: AsyncSession = Depends(get_db)):
     run = await svc.get_run(db, uid)
     if run is None:
         raise HTTPException(status_code=404, detail=f"Run '{run_id}' not found")
-    return RunResponse.model_validate(run)
+    return _enrich_run(run)
 
 
 @router.post("/runs/{run_id}/start", response_model=RunResponse, tags=["Runs"])
@@ -276,7 +331,7 @@ async def mark_run_start(run_id: str, db: AsyncSession = Depends(get_db)):
     run = await svc.transition_run(db, uuid.UUID(run_id), "RUNNING")
     if run is None:
         raise HTTPException(status_code=404, detail=f"Run '{run_id}' not found")
-    return RunResponse.model_validate(run)
+    return _enrich_run(run)
 
 
 @router.post("/runs/{run_id}/complete", response_model=RunResponse, tags=["Runs"])
@@ -286,7 +341,7 @@ async def mark_run_complete(run_id: str, db: AsyncSession = Depends(get_db)):
     run = await svc.transition_run(db, uuid.UUID(run_id), "COMPLETED")
     if run is None:
         raise HTTPException(status_code=404, detail=f"Run '{run_id}' not found")
-    return RunResponse.model_validate(run)
+    return _enrich_run(run)
 
 
 @router.post("/runs/{run_id}/fail", response_model=RunResponse, tags=["Runs"])
@@ -296,7 +351,7 @@ async def mark_run_fail(run_id: str, db: AsyncSession = Depends(get_db)):
     run = await svc.transition_run(db, uuid.UUID(run_id), "FAILED")
     if run is None:
         raise HTTPException(status_code=404, detail=f"Run '{run_id}' not found")
-    return RunResponse.model_validate(run)
+    return _enrich_run(run)
 
 
 @router.post("/runs/{run_id}/abort", response_model=RunResponse, tags=["Runs"])
@@ -306,4 +361,4 @@ async def mark_run_abort(run_id: str, db: AsyncSession = Depends(get_db)):
     run = await svc.transition_run(db, uuid.UUID(run_id), "ABORTED")
     if run is None:
         raise HTTPException(status_code=404, detail=f"Run '{run_id}' not found")
-    return RunResponse.model_validate(run)
+    return _enrich_run(run)

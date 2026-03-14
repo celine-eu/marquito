@@ -211,6 +211,7 @@ class DatasetVersion(Base):
     lifecycle_state: Mapped[str | None] = mapped_column(String(64))
     run_uuid: Mapped[uuidlib.UUID | None] = mapped_column(UUID(as_uuid=True))
     schema_version_uuid: Mapped[uuidlib.UUID | None] = mapped_column(UUID(as_uuid=True))
+    facets: Mapped[dict] = mapped_column(JSON, default=dict, server_default="{}")
 
     dataset: Mapped["Dataset"] = relationship("Dataset")
 
@@ -247,6 +248,9 @@ class Job(Base):
 
     namespace: Mapped["Namespace"] = relationship("Namespace", back_populates="jobs")
     runs: Mapped[list["Run"]] = relationship("Run", back_populates="job")
+    versions: Mapped[list["JobVersion"]] = relationship(
+        "JobVersion", back_populates="job", order_by="JobVersion.created_at"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -293,6 +297,7 @@ class RunDatasetInput(Base):
     dataset_uuid: Mapped[uuidlib.UUID] = mapped_column(
         ForeignKey("datasets.uuid"), primary_key=True
     )
+    dataset_version_uuid: Mapped[uuidlib.UUID | None] = mapped_column(UUID(as_uuid=True))
 
     run: Mapped["Run"] = relationship("Run", back_populates="input_datasets")
     dataset: Mapped["Dataset"] = relationship("Dataset")
@@ -308,9 +313,36 @@ class RunDatasetOutput(Base):
     dataset_uuid: Mapped[uuidlib.UUID] = mapped_column(
         ForeignKey("datasets.uuid"), primary_key=True
     )
+    dataset_version_uuid: Mapped[uuidlib.UUID | None] = mapped_column(UUID(as_uuid=True))
 
     run: Mapped["Run"] = relationship("Run", back_populates="output_datasets")
     dataset: Mapped["Dataset"] = relationship("Dataset")
+
+
+# ---------------------------------------------------------------------------
+# Job versions
+# ---------------------------------------------------------------------------
+
+
+class JobVersion(Base):
+    __tablename__ = "job_versions"
+
+    uuid: Mapped[uuidlib.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuidlib.uuid4
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    job_uuid: Mapped[uuidlib.UUID] = mapped_column(
+        ForeignKey("jobs.uuid"), nullable=False
+    )
+    version: Mapped[uuidlib.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    inputs: Mapped[list] = mapped_column(JSON, default=list, server_default="[]")
+    outputs: Mapped[list] = mapped_column(JSON, default=list, server_default="[]")
+    location: Mapped[str | None] = mapped_column(Text)
+    context: Mapped[dict] = mapped_column(JSON, default=dict, server_default="{}")
+
+    job: Mapped["Job"] = relationship("Job", back_populates="versions")
 
 
 # ---------------------------------------------------------------------------

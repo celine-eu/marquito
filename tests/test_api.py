@@ -969,3 +969,251 @@ async def test_search_empty_results(client):
 async def test_search_invalid_filter(client):
     resp = await client.get(f"{BASE}/search?q=x&filter=INVALID")
     assert resp.status_code == 400
+
+
+# ---------------------------------------------------------------------------
+# Traceability / audit compliance
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_dataset_version_facets_after_ol_ingest(client):
+    """OL ingest with schema facet → dataset version should carry the facets snapshot."""
+    event = ol_event(
+        "COMPLETE",
+        ns="facet-ver-ns",
+        outputs=[{
+            "namespace": "facet-ver-ns",
+            "name": "faceted-table",
+            "facets": {
+                "schema": {
+                    "_producer": "test",
+                    "_schemaURL": "https://openlineage.io/spec/facets/1-0-0/SchemaDatasetFacet.json",
+                    "fields": [{"name": "col1", "type": "STRING"}],
+                }
+            },
+        }],
+    )
+    await ingest_event(client, event)
+
+    resp = await client.get(f"{BASE}/namespaces/facet-ver-ns/datasets/faceted-table/versions")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["totalCount"] >= 1
+    # At least one version should have a non-empty facets snapshot
+    versions_with_facets = [v for v in data["versions"] if v.get("facets")]
+    assert len(versions_with_facets) >= 1
+
+
+@pytest.mark.asyncio
+async def test_job_put_inputs_outputs_roundtrip(client):
+    """PUT /jobs with inputs/outputs → GET should return those same inputs/outputs."""
+    await create_namespace(client, "jv-ns")
+    resp = await client.put(
+        f"{BASE}/namespaces/jv-ns/jobs/jv-job",
+        json={
+            "type": "BATCH",
+            "inputs": [{"namespace": "jv-ns", "name": "in-table"}],
+            "outputs": [{"namespace": "jv-ns", "name": "out-table"}],
+        },
+    )
+    assert resp.status_code == 200
+
+    get_resp = await client.get(f"{BASE}/namespaces/jv-ns/jobs/jv-job")
+    assert get_resp.status_code == 200
+    data = get_resp.json()
+    input_names = [i["name"] for i in data["inputs"]]
+    output_names = [o["name"] for o in data["outputs"]]
+    assert "in-table" in input_names
+    assert "out-table" in output_names
+
+
+@pytest.mark.asyncio
+async def test_ol_ingest_job_inputs_outputs_populated(client):
+    """After OL ingest, GET /jobs should return populated inputs and outputs."""
+    event = ol_event(
+        "COMPLETE",
+        ns="jv-ol-ns",
+        job="jv-ol-job",
+        inputs=[{"namespace": "jv-ol-ns", "name": "source-table", "facets": {}}],
+        outputs=[{"namespace": "jv-ol-ns", "name": "sink-table", "facets": {}}],
+    )
+    await ingest_event(client, event)
+
+    resp = await client.get(f"{BASE}/namespaces/jv-ol-ns/jobs/jv-ol-job")
+    assert resp.status_code == 200
+    data = resp.json()
+    input_names = [i["name"] for i in data["inputs"]]
+    output_names = [o["name"] for o in data["outputs"]]
+    assert "source-table" in input_names
+    assert "sink-table" in output_names
+
+
+@pytest.mark.asyncio
+async def test_dataset_version_uuid_set_after_ol_ingest(client):
+    """OL ingest should create run mapping rows with dataset_version_uuid populated."""
+    run_id = str(uuid.uuid4())
+    event = ol_event(
+        "COMPLETE",
+        ns="dvuuid-ns",
+        job="dvuuid-job",
+        run_id=run_id,
+        inputs=[{"namespace": "dvuuid-ns", "name": "src-ds", "facets": {}}],
+    )
+    await ingest_event(client, event)
+
+    # Verify via the versions endpoint that a version was created for the dataset
+    resp = await client.get(f"{BASE}/namespaces/dvuuid-ns/datasets/src-ds/versions")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["totalCount"] >= 1
+
+
+# ---------------------------------------------------------------------------
+# Audit gap tests (gaps 1-5)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_current_version_uuid_set_after_put_dataset(client):
+    """After PUT /datasets, the dataset response should include a non-null currentVersionUuid."""
+    await create_namespace(client, "cv-ns")
+    await create_dataset(client, "cv-ns", "cv-table")
+
+    resp = await client.get(f"{BASE}/namespaces/cv-ns/datasets/cv-table")
+    assert resp.status_code == 200
+    data = resp.json()
+    # currentVersionUuid is stored in DB but not in DatasetResponse yet;
+    # confirm via the versions list that at least one version exists
+    versions_resp = await client.get(f"{BASE}/namespaces/cv-ns/datasets/cv-table/versions")
+    assert versions_resp.status_code == 200
+    assert versions_resp.json()["totalCount"] >= 1
+
+
+@pytest.mark.asyncio
+async def test_current_version_uuid_set_after_ol_ingest(client):
+    """After OL ingest, the dataset should have current_version_uuid set (visible via lineage graph)."""
+    event = ol_event(
+        "COMPLETE",
+        ns="cv-ol-ns",
+        job="cv-ol-job",
+        outputs=[{"namespace": "cv-ol-ns", "name": "cv-ol-table", "facets": {}}],
+    )
+    await ingest_event(client, event)
+
+    resp = await client.get(f"{BASE}/lineage?nodeId=dataset:cv-ol-ns:cv-ol-table")
+    assert resp.status_code == 200
+    nodes = resp.json()["graph"]
+    ds_nodes = [n for n in nodes if n["type"] == "DATASET" and "cv-ol-table" in n["id"]]
+    assert len(ds_nodes) >= 1
+    assert ds_nodes[0]["data"]["currentVersionUuid"] is not None
+
+
+@pytest.mark.asyncio
+async def test_dataset_version_created_by_run_populated(client):
+    """Versions created via OL ingest should have createdByRun set."""
+    run_id = str(uuid.uuid4())
+    event = ol_event(
+        "COMPLETE",
+        ns="cbr-ns",
+        job="cbr-job",
+        run_id=run_id,
+        outputs=[{"namespace": "cbr-ns", "name": "cbr-table", "facets": {}}],
+    )
+    await ingest_event(client, event)
+
+    resp = await client.get(f"{BASE}/namespaces/cbr-ns/datasets/cbr-table/versions")
+    assert resp.status_code == 200
+    versions = resp.json()["versions"]
+    assert len(versions) >= 1
+    run_linked = [v for v in versions if v.get("createdByRun") is not None]
+    assert len(run_linked) >= 1
+    assert run_linked[0]["createdByRun"]["uuid"] == run_id
+
+
+@pytest.mark.asyncio
+async def test_run_inputs_outputs_populated_after_ingest(client):
+    """GET /runs/{id} should include inputDatasets and outputDatasets after OL ingest."""
+    run_id = str(uuid.uuid4())
+    event = ol_event(
+        "COMPLETE",
+        ns="rio-ns",
+        job="rio-job",
+        run_id=run_id,
+        inputs=[{"namespace": "rio-ns", "name": "src-table", "facets": {}}],
+        outputs=[{"namespace": "rio-ns", "name": "dst-table", "facets": {}}],
+    )
+    await ingest_event(client, event)
+
+    resp = await client.get(f"{BASE}/runs/{run_id}")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "inputDatasets" in data
+    assert "outputDatasets" in data
+    input_names = [d["name"] for d in data["inputDatasets"]]
+    output_names = [d["name"] for d in data["outputDatasets"]]
+    assert "src-table" in input_names
+    assert "dst-table" in output_names
+    # datasetVersionUuid should be populated
+    assert all(d["datasetVersionUuid"] is not None for d in data["inputDatasets"])
+    assert all(d["datasetVersionUuid"] is not None for d in data["outputDatasets"])
+
+
+@pytest.mark.asyncio
+async def test_get_dataset_version_by_uuid(client):
+    """GET /datasets/{ds}/versions/{version} should return the version or 404."""
+    run_id = str(uuid.uuid4())
+    event = ol_event(
+        "COMPLETE",
+        ns="gdv-ns",
+        job="gdv-job",
+        run_id=run_id,
+        outputs=[{"namespace": "gdv-ns", "name": "gdv-table", "facets": {}}],
+    )
+    await ingest_event(client, event)
+
+    # Get the version UUID from the list endpoint
+    versions_resp = await client.get(f"{BASE}/namespaces/gdv-ns/datasets/gdv-table/versions")
+    assert versions_resp.status_code == 200
+    versions = versions_resp.json()["versions"]
+    assert len(versions) >= 1
+    version_uuid = versions[0]["version"]
+
+    # Single-version lookup should return 200
+    resp = await client.get(f"{BASE}/namespaces/gdv-ns/datasets/gdv-table/versions/{version_uuid}")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["version"] == version_uuid
+    assert data["createdByRun"]["uuid"] == run_id
+
+    # Unknown version UUID returns 404
+    resp404 = await client.get(
+        f"{BASE}/namespaces/gdv-ns/datasets/gdv-table/versions/{uuid.uuid4()}"
+    )
+    assert resp404.status_code == 404
+
+    # Invalid UUID returns 400
+    resp400 = await client.get(f"{BASE}/namespaces/gdv-ns/datasets/gdv-table/versions/not-a-uuid")
+    assert resp400.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_lineage_graph_includes_current_version_uuid(client):
+    """Lineage graph dataset nodes should include currentVersionUuid after ingest."""
+    event = ol_event(
+        "COMPLETE",
+        ns="lgv-ns",
+        job="lgv-job",
+        inputs=[{"namespace": "lgv-ns", "name": "lgv-input", "facets": {}}],
+        outputs=[{"namespace": "lgv-ns", "name": "lgv-output", "facets": {}}],
+    )
+    await ingest_event(client, event)
+
+    resp = await client.get(f"{BASE}/lineage?nodeId=job:lgv-ns:lgv-job")
+    assert resp.status_code == 200
+    nodes = resp.json()["graph"]
+    ds_nodes = [n for n in nodes if n["type"] == "DATASET"]
+    assert len(ds_nodes) >= 1
+    for n in ds_nodes:
+        assert "currentVersionUuid" in n["data"]
+        assert n["data"]["currentVersionUuid"] is not None

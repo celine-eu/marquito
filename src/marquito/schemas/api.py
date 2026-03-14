@@ -9,7 +9,7 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from pydantic.alias_generators import to_camel
 
 
@@ -234,6 +234,29 @@ class RunResponse(BaseModel):
     ended_at: datetime | None = None
     duration_ms: int | None = None
     facets: dict[str, Any] = {}
+    input_datasets: list[dict] = []
+    output_datasets: list[dict] = []
+
+    @model_validator(mode="before")
+    @classmethod
+    def _extract_from_orm(cls, data: Any) -> Any:
+        # For SQLAlchemy ORM objects, convert to a plain dict to avoid
+        # triggering lazy-loaded relationships (input_datasets/output_datasets).
+        if hasattr(data, "__mapper__"):
+            return {
+                "uuid": getattr(data, "uuid", None),
+                "created_at": getattr(data, "created_at", None),
+                "updated_at": getattr(data, "updated_at", None),
+                "nominal_start_time": getattr(data, "nominal_start_time", None),
+                "nominal_end_time": getattr(data, "nominal_end_time", None),
+                "current_run_state": getattr(data, "current_run_state", "NEW"),
+                "started_at": getattr(data, "started_at", None),
+                "ended_at": getattr(data, "ended_at", None),
+                "facets": getattr(data, "facets", {}) or {},
+                "input_datasets": [],
+                "output_datasets": [],
+            }
+        return data
 
     @classmethod
     def model_validate(cls, obj, **kw):  # type: ignore[override]

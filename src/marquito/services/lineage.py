@@ -18,6 +18,7 @@ from marquito.models.orm import (
     DatasetFieldTag,
     DatasetTag,
     Job,
+    JobVersion,
     LineageEvent,
     Namespace,
     Run,
@@ -214,6 +215,22 @@ async def count_dataset_versions(
     return result.scalar_one()
 
 
+async def get_dataset_version(
+    db: AsyncSession, namespace_name: str, dataset_name: str, version_id: uuid.UUID
+):
+    from marquito.models.orm import DatasetVersion
+    ds = await get_dataset(db, namespace_name, dataset_name)
+    if ds is None:
+        return None
+    result = await db.execute(
+        select(DatasetVersion).where(
+            DatasetVersion.dataset_uuid == ds.uuid,
+            DatasetVersion.version == version_id,
+        )
+    )
+    return result.scalar_one_or_none()
+
+
 async def soft_delete_dataset(
     db: AsyncSession, namespace_name: str, dataset_name: str
 ) -> Dataset | None:
@@ -296,12 +313,16 @@ async def upsert_dataset(
 
     # Record a new dataset version for this upsert
     from marquito.models.orm import DatasetVersion
-    db.add(DatasetVersion(
+    dv = DatasetVersion(
         dataset_uuid=ds.uuid,
         version=uuid.uuid4(),
         namespace_name=namespace_name,
         dataset_name=dataset_name,
-    ))
+        facets=ds.facets or {},
+    )
+    db.add(dv)
+    await db.flush()
+    ds.current_version_uuid = dv.uuid
     await db.flush()
 
     return await get_dataset(db, namespace_name, dataset_name)  # type: ignore[return-value]
@@ -318,7 +339,11 @@ async def get_job(db: AsyncSession, namespace_name: str, job_name: str) -> Job |
         return None
     result = await db.execute(
         select(Job)
-        .options(selectinload(Job.namespace), selectinload(Job.runs))
+        .options(
+            selectinload(Job.namespace),
+            selectinload(Job.runs),
+            selectinload(Job.versions),
+        )
         .where(Job.namespace_uuid == ns.uuid, Job.name == job_name)
     )
     return result.scalar_one_or_none()
@@ -332,7 +357,11 @@ async def list_jobs(
         return []
     result = await db.execute(
         select(Job)
-        .options(selectinload(Job.namespace), selectinload(Job.runs))
+        .options(
+            selectinload(Job.namespace),
+            selectinload(Job.runs),
+            selectinload(Job.versions),
+        )
         .where(Job.namespace_uuid == ns.uuid, Job.is_hidden.is_(False))
         .order_by(Job.name)
         .limit(limit)
@@ -348,7 +377,11 @@ async def list_all_jobs(
     from sqlalchemy.orm import contains_eager
     q = (
         select(Job)
-        .options(selectinload(Job.namespace), selectinload(Job.runs))
+        .options(
+            selectinload(Job.namespace),
+            selectinload(Job.runs),
+            selectinload(Job.versions),
+        )
         .where(Job.is_hidden.is_(False))
         .order_by(Job.updated_at.desc())
         .limit(limit)
@@ -421,6 +454,19 @@ async def upsert_job(
     job.type = body.type
     job.description = body.description
     await db.flush()
+
+    jv = JobVersion(
+        job_uuid=job.uuid,
+        version=uuid.uuid4(),
+        inputs=[{"namespace": i.get("namespace", ""), "name": i.get("name", "")} for i in body.inputs],
+        outputs=[{"namespace": o.get("namespace", ""), "name": o.get("name", "")} for o in body.outputs],
+        location=body.location,
+        context=body.context,
+    )
+    db.add(jv)
+    job.current_version_uuid = jv.uuid
+    await db.flush()
+
     return await get_job(db, namespace_name, job_name)  # type: ignore[return-value]
 
 
@@ -433,8 +479,12 @@ async def get_run(db: AsyncSession, run_id: uuid.UUID) -> Run | None:
     result = await db.execute(
         select(Run)
         .options(
-            selectinload(Run.input_datasets).selectinload(RunDatasetInput.dataset),
-            selectinload(Run.output_datasets).selectinload(RunDatasetOutput.dataset),
+            selectinload(Run.input_datasets)
+                .selectinload(RunDatasetInput.dataset)
+                .selectinload(Dataset.namespace),
+            selectinload(Run.output_datasets)
+                .selectinload(RunDatasetOutput.dataset)
+                .selectinload(Dataset.namespace),
         )
         .where(Run.uuid == run_id)
     )
@@ -560,7 +610,10 @@ async def ingest_openlineage_event(db: AsyncSession, event: OpenLineageEvent) ->
     await db.flush()
 
     # 4. Upsert datasets + lineage edges
-    async def _ensure_dataset(ns_name: str, ds_name: str, facets: dict) -> Dataset:
+    async def _ensure_dataset(
+        ns_name: str, ds_name: str, facets: dict
+    ) -> tuple[Dataset, uuid.UUID]:
+        from marquito.models.orm import DatasetVersion
         ds_ns = await get_namespace(db, ns_name)
         if ds_ns is None:
             ds_ns = Namespace(name=ns_name, current_owner_name="openlineage")
@@ -604,10 +657,24 @@ async def ingest_openlineage_event(db: AsyncSession, event: OpenLineageEvent) ->
             ds.facets = {**(ds.facets or {}), **clean_facets}
             await db.flush()
 
-        return ds
+        # Create a dataset version snapshot
+        dv = DatasetVersion(
+            dataset_uuid=ds.uuid,
+            version=uuid.uuid4(),
+            namespace_name=ns_name,
+            dataset_name=ds_name,
+            run_uuid=run.uuid,
+            facets=clean_facets,
+        )
+        db.add(dv)
+        await db.flush()
+        ds.current_version_uuid = dv.uuid
+        await db.flush()
+
+        return ds, dv.uuid
 
     for inp in event.inputs:
-        ds = await _ensure_dataset(inp.namespace, inp.name, inp.facets)
+        ds, dv_uuid = await _ensure_dataset(inp.namespace, inp.name, inp.facets)
         edge_result = await db.execute(
             select(RunDatasetInput).where(
                 RunDatasetInput.run_uuid == run.uuid,
@@ -615,10 +682,14 @@ async def ingest_openlineage_event(db: AsyncSession, event: OpenLineageEvent) ->
             )
         )
         if edge_result.scalar_one_or_none() is None:
-            db.add(RunDatasetInput(run_uuid=run.uuid, dataset_uuid=ds.uuid))
+            db.add(RunDatasetInput(
+                run_uuid=run.uuid,
+                dataset_uuid=ds.uuid,
+                dataset_version_uuid=dv_uuid,
+            ))
 
     for out in event.outputs:
-        ds = await _ensure_dataset(out.namespace, out.name, out.facets)
+        ds, dv_uuid = await _ensure_dataset(out.namespace, out.name, out.facets)
         edge_result = await db.execute(
             select(RunDatasetOutput).where(
                 RunDatasetOutput.run_uuid == run.uuid,
@@ -626,7 +697,21 @@ async def ingest_openlineage_event(db: AsyncSession, event: OpenLineageEvent) ->
             )
         )
         if edge_result.scalar_one_or_none() is None:
-            db.add(RunDatasetOutput(run_uuid=run.uuid, dataset_uuid=ds.uuid))
+            db.add(RunDatasetOutput(
+                run_uuid=run.uuid,
+                dataset_uuid=ds.uuid,
+                dataset_version_uuid=dv_uuid,
+            ))
+
+    # Create a job version for this event
+    jv = JobVersion(
+        job_uuid=job.uuid,
+        version=uuid.uuid4(),
+        inputs=[{"namespace": i.namespace, "name": i.name} for i in event.inputs],
+        outputs=[{"namespace": o.namespace, "name": o.name} for o in event.outputs],
+    )
+    db.add(jv)
+    job.current_version_uuid = jv.uuid
 
     await db.flush()
 
@@ -724,6 +809,7 @@ async def get_lineage_graph(
             "namespace": ds.namespace.name,
             "name": ds.name,
             "fields": fields,
+            "currentVersionUuid": str(ds.current_version_uuid) if ds.current_version_uuid else None,
         }
 
     async def _walk_dataset(dataset_uuid: uuid.UUID, remaining: int) -> None:
