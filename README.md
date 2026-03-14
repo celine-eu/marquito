@@ -1,4 +1,4 @@
-# marquez-py — Python/FastAPI rewrite of the Marquez metadata service
+# marquito-py — Python/FastAPI rewrite of the Marquez metadata service
 
 ## Quick start
 
@@ -47,15 +47,15 @@ docker compose up --build
 
 ## Environment variables
 
-All variables are prefixed with `MARQUEZ_`:
+All variables are prefixed with `MARQUITO_`:
 
 | Variable | Default |
 |----------|---------|
-| `MARQUEZ_DB_HOST` | `localhost` |
-| `MARQUEZ_DB_PORT` | `5432` |
-| `MARQUEZ_DB_NAME` | `marquez` |
-| `MARQUEZ_DB_USER` | `marquez` |
-| `MARQUEZ_DB_PASSWORD` | `marquez` |
+| `MARQUITO_DB_HOST` | `localhost` |
+| `MARQUITO_DB_PORT` | `5432` |
+| `MARQUITO_DB_NAME` | `marquito` |
+| `MARQUITO_DB_USER` | `marquito` |
+| `MARQUITO_DB_PASSWORD` | `marquito` |
 
 ## Running tests
 

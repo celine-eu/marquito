@@ -2,15 +2,15 @@ services:
   db:
     image: postgis/postgis:17-3.5-alpine
     environment:
-      POSTGRES_DB: marquez
-      POSTGRES_USER: marquez
-      POSTGRES_PASSWORD: marquez
+      POSTGRES_DB: marquito
+      POSTGRES_USER: marquito
+      POSTGRES_PASSWORD: marquito
     ports:
       - "45432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U marquez"]
+      test: ["CMD-SHELL", "pg_isready -U marquito"]
       interval: 5s
       timeout: 5s
       retries: 5
@@ -19,24 +19,23 @@ services:
     build: .
     command: alembic upgrade head
     environment:
-      MARQUEZ_DB_HOST: db
-      MARQUEZ_DB_PORT: 5432
-      MARQUEZ_DB_NAME: marquez
-      MARQUEZ_DB_USER: marquez
-      MARQUEZ_DB_PASSWORD: marquez
+      MARQUITO_DB_HOST: db
+      MARQUITO_DB_PORT: 5432
+      MARQUITO_DB_NAME: marquito
+      MARQUITO_DB_USER: marquito
+      MARQUITO_DB_PASSWORD: marquito
     depends_on:
       db:
         condition: service_healthy
 
   api:
     build: .
-    command: uvicorn app.main:app --host 0.0.0.0 --port 5000 --reload
     environment:
-      MARQUEZ_DB_HOST: db
-      MARQUEZ_DB_PORT: 5432
-      MARQUEZ_DB_NAME: marquez
-      MARQUEZ_DB_USER: marquez
-      MARQUEZ_DB_PASSWORD: marquez
+      MARQUITO_DB_HOST: db
+      MARQUITO_DB_PORT: 5432
+      MARQUITO_DB_NAME: marquito
+      MARQUITO_DB_USER: marquito
+      MARQUITO_DB_PASSWORD: marquito
     ports:
       - "5000:5000"
     depends_on:
