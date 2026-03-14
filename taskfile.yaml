@@ -1,0 +1,17 @@
+version: "3"
+
+tasks:
+  run:
+    desc: Run
+    cmds:
+      - .venv/bin/uvicorn marquito.main:create_app --host 0.0.0.0 --port 5000 --reload
+
+  db:migrate:
+    desc: Apply Alembic migrations (upgrade head)
+    cmds:
+      - "uv run alembic upgrade head"
+
+  db:revision:
+    desc: "Create a new Alembic revision (autogenerate). Usage: task db:revision -- -m <message>"
+    cmds:
+      - "uv run alembic revision --autogenerate {{.CLI_ARGS}}"

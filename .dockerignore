@@ -1,0 +1,7 @@
+.venv
+.vscode
+.claude
+.git
+docker-compose.yaml
+Dockerfile
+taskfile.yaml
